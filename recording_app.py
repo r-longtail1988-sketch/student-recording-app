@@ -3,144 +3,120 @@ from streamlit_mic_recorder import mic_recorder
 from pydrive2.auth import GoogleAuth
 from pydrive2.drive import GoogleDrive
 from oauth2client.service_account import ServiceAccountCredentials
-import urllib.parse
-import os
+import qrcode
+from io import BytesIO
 
-# --- 1. Googleドライブ連携の設定 ---
+# --- 1. Googleドライブ連携の設定（Secrets対応版） ---
 def login_with_service_account():
-    # service_account.json を使って認証
+    # Streamlit CloudのSecretsから情報を取得
+    try:
+        key_dict = st.secrets["gcp_service_account"]
+    except KeyError:
+        st.error("Secretsが設定されていません。Streamlit CloudのSettingsからSecretsを設定してください。")
+        return None
+    
     scope = ['https://www.googleapis.com/auth/drive']
     gauth = GoogleAuth()
-    gauth.credentials = ServiceAccountCredentials.from_json_keyfile_name(
-        'service_account.json', scope)
+    
+    # ファイル名(name)ではなく、辞書データ(dict)から読み込む関数を使用
+    gauth.credentials = ServiceAccountCredentials.from_json_keyfile_dict(
+        key_dict, scope)
     return GoogleDrive(gauth)
 
+# --- 2. フォルダ作成・検索用関数 ---
 def get_or_create_folder(drive, folder_name, parent_id):
-    """指定した親フォルダ内に、同名のフォルダがあればIDを返し、なければ作成する"""
-    query = f"title = '{folder_name}' and '{parent_id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+    query = f"'{parent_id}' in parents and title = '{folder_name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
     file_list = drive.ListFile({'q': query}).GetList()
-    
     if file_list:
         return file_list[0]['id']
     else:
-        folder = drive.CreateFile({
+        folder_metadata = {
             'title': folder_name,
             'parents': [{'id': parent_id}],
             'mimeType': 'application/vnd.google-apps.folder'
-        })
+        }
+        folder = drive.CreateFile(folder_metadata)
         folder.Upload()
         return folder['id']
 
-# --- 2. 状態管理（URLパラメータの取得） ---
-# パラメータ 'l' (lesson) があれば生徒モードとみなす
-params = st.query_params
-is_student_mode = "l" in params
+# --- 3. メインアプリの構成 ---
 
-# 親フォルダ（授業データのルート）のIDを指定してください
+# 設定（ここを書き換えてください）
 PARENT_FOLDER_ID = "1Qsnz2k7GwqdTbF7AoBW_Lu8ZnydBqfun"
+# 公開後に発行される「https://...」から始まるURLをここに入力
+BASE_URL = "https://student-recording-app-56wrfl8ne7hwksqkdxwe5h.streamlit.app/" 
 
-# --- 3. アプリケーションのUI構成 ---
+st.title("録音ツール")
 
-# 【先生モード：QRコード発行画面】
-if not is_student_mode:
-    st.set_page_config(page_title="授業録音管理システム", layout="wide")
-    st.sidebar.title("🛠 授業管理・QR発行")
+# 先生用設定画面（サイドバー）
+with st.sidebar:
+    st.header("管理者設定")
+    year = st.text_input("年度", value="2026年度")
+    grade_class = st.text_input("クラス", placeholder="例：1年A組")
+    lesson_name = st.text_input("授業名", placeholder="例：細胞の観察")
     
-    # ① 年度を選択
-    year = st.sidebar.selectbox("年度", ["2025年度", "2026年度", "2027年度"])
+    if st.button("QRコードを生成"):
+        # URLにパラメータを付与して、スマホで開いた時に直接入力画面が出るようにする
+        params = f"?year={year}&class={grade_class}&lesson={lesson_name}"
+        target_url = BASE_URL + params
+        
+        img = qrcode.make(target_url)
+        buf = BytesIO()
+        img.save(buf)
+        st.image(buf.getvalue(), caption="生徒用QRコード")
+        st.write(f"URL: {target_url}")
+
+# 生徒用入力・録音画面
+st.divider()
+
+# URLパラメータから設定を取得（QRコード経由の場合）
+query_params = st.query_params
+year_val = query_params.get("year", year)
+class_val = query_params.get("class", grade_class)
+lesson_val = query_params.get("lesson", lesson_name)
+
+st.subheader(f"{year_val} {class_val}：{lesson_val}")
+
+col1, col2 = st.columns(2)
+with col1:
+    group_num = st.selectbox("班を選択", [f"{i}班" for i in range(1, 13)])
+with col2:
+    members = st.text_input("氏名（全員分）", placeholder="例：佐藤・田中・鈴木")
+
+# 録音コンポーネント
+st.write("---")
+audio = mic_recorder(
+    start_prompt="⏺ 録音を開始する",
+    stop_prompt="⏹ 録音を終了して送信",
+    key='recorder'
+)
+
+if audio:
+    st.audio(audio['bytes'])
     
-    # ② クラスの選択と作成
-    # ※ 本来はドライブから動的に取得可能ですが、ここではシンプルに実装
-    existing_classes = ["1年A組", "1年B組", "2年C組"] 
-    class_option = st.sidebar.selectbox("クラスを選択", ["＋ 新しいクラスを作成"] + existing_classes)
-    
-    if class_option == "＋ 新しいクラスを作成":
-        target_class = st.sidebar.text_input("新しいクラス名を入力", placeholder="例：1年A組")
+    if not members:
+        st.warning("氏名を入力してから録音してください。")
     else:
-        target_class = class_option
-
-    # ③ 授業の追加（タイトル入力）
-    lesson_title = st.sidebar.text_input("授業タイトル", placeholder="例：DNAの抽出実験")
-
-    # ④ 設定の確定とQRコード表示
-    if target_class and lesson_title:
-        st.title("📢 授業用QRコードの発行")
-        st.write(f"現在の設定: **{year} / {target_class} / {lesson_title}**")
-        
-        # 生徒用URLの組み立て（公開後のURLに変更してください）
-        base_url = "http://192.168.150.115:8501" 
-        query_str = urllib.parse.urlencode({"y": year, "c": target_class, "l": lesson_title})
-        student_url = f"{base_url}?{query_str}"
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            # QRコードの生成（外部APIを利用）
-            qr_api = f"https://api.qrserver.com/v1/create-qr-code/?data={urllib.parse.quote(student_url)}&size=300x300"
-            st.image(qr_api, caption="生徒に提示するQRコード")
-        
-        with col2:
-            st.subheader("💡 導入説明・プレビュー")
-            st.write("このボタンを押すと、生徒に表示される画面を別タブで確認できます。")
-            st.link_button("生徒用画面をプレビュー", student_url)
-            st.info(f"コピー用URL: {student_url}")
-
-# 【生徒モード：録音・保存画面】
-else:
-    st.set_page_config(page_title="グループワーク録音")
-    y, c, l = params["y"], params["c"], params["l"]
-    
-    st.title("🎙 グループワーク録音")
-    st.success(f"対象：{y} {c} \n\n 授業：{l}")
-    
-    # 班の選択（1〜12班）
-    group_num = st.selectbox("自分の班を選んでください", [f"{i}班" for i in range(1, 13)])
-    
-    # メンバー入力
-    members = st.text_input("班員の名前（名字をカンマ区切りで）", placeholder="例：山田, 田中, 佐藤")
-
-    if members:
-        st.divider()
-        st.write("準備ができたら下のボタンを押して録音を開始してください。")
-        
-        # 録音コンポーネント
-        audio = mic_recorder(
-            start_prompt="⏺ 録音スタート",
-            stop_prompt="⏹ ストップ・保存（送信）",
-            key='recorder'
-        )
-
-        if audio:
-            with st.spinner('Googleドライブに送信中...'):
-                try:
-                    drive = login_with_service_account()
+        with st.spinner("Googleドライブに保存中..."):
+            try:
+                drive = login_with_service_account()
+                if drive:
+                    # フォルダ階層の作成（年度 > クラス > 授業）
+                    y_id = get_or_create_folder(drive, year_val, PARENT_FOLDER_ID)
+                    c_id = get_or_create_folder(drive, class_val, y_id)
+                    l_id = get_or_create_folder(drive, lesson_val, c_id)
                     
-                    # 階層フォルダの取得・作成
-                    year_id = get_or_create_folder(drive, y, PARENT_FOLDER_ID)
-                    class_id = get_or_create_folder(drive, c, year_id)
-                    lesson_id = get_or_create_folder(drive, l, class_id)
+                    # ファイル名の作成
+                    filename = f"{group_num}_{members}.wav"
                     
-                    # ファイル名の生成
-                    safe_members = members.replace(",", "_").replace(" ", "")
-                    filename = f"{group_num}_{safe_members}.wav"
-                    
-                    # 一時保存してアップロード
-                    with open(filename, "wb") as f:
-                        f.write(audio['bytes'])
-                    
-                    gfile = drive.CreateFile({
+                    # ファイルのアップロード
+                    new_file = drive.CreateFile({
                         'title': filename,
-                        'parents': [{'id': lesson_id}]
+                        'parents': [{'id': l_id}]
                     })
-                    gfile.SetContentFile(filename)
-                    gfile.Upload()
+                    new_file.SetContentRaw(audio['bytes'])
+                    new_file.Upload()
                     
-                    st.success(f"送信完了しました！ {group_num}の皆さん、お疲れ様でした。")
-                    os.remove(filename) # 一時ファイルを削除
-                    
-                    if st.button("もう一度録音する（撮り直しなど）"):
-                        st.rerun()
-                        
-                except Exception as e:
-                    st.error(f"エラーが発生しました: {e}")
-    else:
-        st.warning("録音を始める前に、班員の名前を入力してください。")
+                    st.success(f"✅ 保存完了！ ({filename})")
+            except Exception as e:
+                st.error(f"エラーが発生しました: {e}")
