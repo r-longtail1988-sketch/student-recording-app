@@ -7,7 +7,7 @@ import qrcode
 from io import BytesIO
 import tempfile
 import os
-import datetime  # 追加：日付取得用
+import datetime
 
 # --- 1. Googleドライブ連携の設定 ---
 def login_with_service_account():
@@ -41,7 +41,7 @@ def get_or_create_folder(drive, folder_name, parent_id):
 
 # --- 3. メインアプリの構成 ---
 
-# 先生の設定値を維持
+# 設定値
 PARENT_FOLDER_ID = "1Qsnz2k7GwqdTbF7AoBW_Lu8ZnydBqfun"
 BASE_URL = "https://student-recording-app-56wrfl8ne7hwksqkdxwe5h.streamlit.app/" 
 
@@ -53,7 +53,7 @@ query_params = st.query_params
 with st.sidebar:
     st.header("管理者設定")
     
-    # 【修正】年度をプルダウン形式（現在年を中心に前後5年分を自動生成）
+    # 年度プルダウン（現在年を中心に生成）
     current_year = datetime.date.today().year
     year_options = [f"{y}年度" for y in range(current_year - 1, current_year + 10)]
     year = st.selectbox("年度", options=year_options, index=1)
@@ -69,6 +69,9 @@ with st.sidebar:
         buf = BytesIO()
         img.save(buf)
         st.image(buf.getvalue(), caption="生徒用QRコード")
+        # 【復活】PCでの検証用にURLを表示
+        st.write(f"生徒用URL:")
+        st.code(target_url)
     
     st.divider()
     st.link_button("生徒用画面をプレビュー", target_url)
@@ -104,13 +107,13 @@ if "year" in query_params:
                 try:
                     drive = login_with_service_account()
                     if drive:
+                        # 【修正】変数名を y_val, c_val, l_val に統一
                         y_id = get_or_create_folder(drive, y_val, PARENT_FOLDER_ID)
-                        c_id = get_or_create_folder(drive, class_val, y_id)
-                        l_id = get_or_create_folder(drive, lesson_val, c_id)
+                        c_id = get_or_create_folder(drive, c_val, y_id)
+                        l_id = get_or_create_folder(drive, l_val, c_id)
                         
                         filename = f"{group_num}_{members}.wav"
                         
-                        # 一時ファイルを使用して確実に保存
                         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
                             tmp.write(audio['bytes'])
                             tmp_path = tmp.name
