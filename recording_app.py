@@ -2,31 +2,41 @@ import streamlit as st
 from streamlit_mic_recorder import mic_recorder
 from pydrive2.auth import GoogleAuth
 from pydrive2.drive import GoogleDrive
-from oauth2client.service_account import ServiceAccountCredentials
 import qrcode
 from io import BytesIO
 import tempfile
 import os
 import datetime
 
-# --- 1. Googleドライブ連携の設定 ---
-def login_with_service_account():
+# --- 1. Googleドライブ連携の設定（OAuth2.0 ユーザー認証版） ---
+def login_with_user_account():
     try:
-        key_dict = st.secrets["gcp_service_account"]
+        # Secretsからクライアント情報を取得
+        creds_dict = st.secrets["google_oauth"]
     except KeyError:
-        st.error("Secretsが設定されていません。")
+        st.error("Secretsに 'google_oauth' が設定されていません。")
         return None
     
-    scope = ['https://www.googleapis.com/auth/drive']
     gauth = GoogleAuth()
-    gauth.credentials = ServiceAccountCredentials.from_json_keyfile_dict(
-        key_dict, scope)
+    
+    # ユーザー認証（リフレッシュトークンを使用して、ログイン画面を毎回出さずに実行）
+    from oauth2client.client import OAuth2Credentials
+    gauth.credentials = OAuth2Credentials(
+        access_token=None,
+        client_id=creds_dict["client_id"],
+        client_secret=creds_dict["client_secret"],
+        refresh_token=creds_dict["refresh_token"],
+        token_expiry=None,
+        token_uri="https://oauth2.googleapis.com/token",
+        user_agent="StreamlitApp",
+    )
     return GoogleDrive(gauth)
 
 # --- 2. フォルダ作成・検索用関数 ---
 def get_or_create_folder(drive, folder_name, parent_id):
     query = f"'{parent_id}' in parents and title = '{folder_name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
     file_list = drive.ListFile({'q': query}).GetList()
+    
     if file_list:
         return file_list[0]['id']
     else:
@@ -41,7 +51,7 @@ def get_or_create_folder(drive, folder_name, parent_id):
 
 # --- 3. メインアプリの構成 ---
 
-# 先生の設定値
+# 先生の個人ドライブにある Recording_app フォルダのID
 PARENT_FOLDER_ID = "1Qsnz2k7GwqdTbF7AoBW_Lu8ZnydBqfun"
 BASE_URL = "https://student-recording-app-56wrfl8ne7hwksqkdxwe5h.streamlit.app/" 
 
@@ -53,7 +63,6 @@ query_params = st.query_params
 with st.sidebar:
     st.header("管理者設定")
     
-    # 年度プルダウン
     current_year = datetime.date.today().year
     year_options = [f"{y}年度" for y in range(current_year - 1, current_year + 10)]
     year = st.selectbox("年度", options=year_options, index=1)
@@ -69,13 +78,10 @@ with st.sidebar:
         buf = BytesIO()
         img.save(buf)
         st.image(buf.getvalue(), caption="生徒用QRコード")
-        
-        # 【改善】クリック可能なリンクとして表示
-        st.write("生徒用URL（クリックで検証用ページを開く）:")
+        st.write("生徒用URL（クリックで検証）:")
         st.markdown(f"[{target_url}]({target_url})")
     
     st.divider()
-    # 以前から搭載している別タブプレビューボタン
     st.link_button("生徒用画面をプレビュー", target_url)
 
 # 生徒用画面
@@ -107,7 +113,7 @@ if "year" in query_params:
         else:
             with st.spinner("Googleドライブに保存中..."):
                 try:
-                    drive = login_with_service_account()
+                    drive = login_with_user_account()
                     if drive:
                         y_id = get_or_create_folder(drive, y_val, PARENT_FOLDER_ID)
                         c_id = get_or_create_folder(drive, c_val, y_id)
@@ -124,10 +130,10 @@ if "year" in query_params:
                             'parents': [{'id': l_id}]
                         })
                         new_file.SetContentFile(tmp_path)
-                        new_file.Upload()
+                        new_file.Upload() # 先生の権限で実行されるため、容量エラーは出ません
                         
                         os.remove(tmp_path)
-                        st.success(f"✅ 保存完了！ ({filename})")
+                        st.success(f"✅ 保存完了！")
                 except Exception as e:
                     st.error(f"エラーが発生しました: {e}")
 else:
