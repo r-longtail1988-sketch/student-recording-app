@@ -2,3 +2,4 @@ streamlit
 streamlit-mic-recorder
 pydrive2
 oauth2client
+qrcode
