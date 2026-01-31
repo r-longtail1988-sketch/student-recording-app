@@ -5,20 +5,20 @@ from pydrive2.drive import GoogleDrive
 from oauth2client.service_account import ServiceAccountCredentials
 import qrcode
 from io import BytesIO
+import tempfile
+import os
+import datetime  # 追加：日付取得用
 
-# --- 1. Googleドライブ連携の設定（Secrets対応版） ---
+# --- 1. Googleドライブ連携の設定 ---
 def login_with_service_account():
     try:
-        # Streamlit CloudのSecretsから情報を取得
         key_dict = st.secrets["gcp_service_account"]
     except KeyError:
-        st.error("Secretsが設定されていません。Streamlit CloudのSettingsからSecretsを設定してください。")
+        st.error("Secretsが設定されていません。")
         return None
     
     scope = ['https://www.googleapis.com/auth/drive']
     gauth = GoogleAuth()
-    
-    # 辞書データ(dict)から読み込む方式
     gauth.credentials = ServiceAccountCredentials.from_json_keyfile_dict(
         key_dict, scope)
     return GoogleDrive(gauth)
@@ -41,23 +41,26 @@ def get_or_create_folder(drive, folder_name, parent_id):
 
 # --- 3. メインアプリの構成 ---
 
-# 先生が既に入力されていた大切な設定値（ここを維持しています）
+# 先生の設定値を維持
 PARENT_FOLDER_ID = "1Qsnz2k7GwqdTbF7AoBW_Lu8ZnydBqfun"
 BASE_URL = "https://student-recording-app-56wrfl8ne7hwksqkdxwe5h.streamlit.app/" 
 
 st.title("録音ツール")
 
-# URLパラメータを取得
 query_params = st.query_params
 
-# 先生用設定画面（サイドバー）
+# 管理者設定（サイドバー）
 with st.sidebar:
     st.header("管理者設定")
-    year = st.text_input("年度", value="2026年度")
+    
+    # 【修正】年度をプルダウン形式（現在年を中心に前後5年分を自動生成）
+    current_year = datetime.date.today().year
+    year_options = [f"{y}年度" for y in range(current_year - 1, current_year + 10)]
+    year = st.selectbox("年度", options=year_options, index=1)
+    
     grade_class = st.text_input("クラス", placeholder="例：1年A組")
     lesson_name = st.text_input("授業名", placeholder="例：細胞の観察")
     
-    # 生徒用URLの生成
     params = f"?year={year}&class={grade_class}&lesson={lesson_name}"
     target_url = BASE_URL + params
     
@@ -66,15 +69,13 @@ with st.sidebar:
         buf = BytesIO()
         img.save(buf)
         st.image(buf.getvalue(), caption="生徒用QRコード")
-        st.write(f"URL: {target_url}")
     
     st.divider()
-    # 【追加】生徒用画面を別タブでプレビューするボタン
     st.link_button("生徒用画面をプレビュー", target_url)
 
-# --- 4. 画面の出し分けロジック ---
+# 生徒用画面
+st.divider()
 
-# URLにパラメータがある場合（QR経由またはプレビュー時）
 if "year" in query_params:
     y_val = query_params.get("year")
     c_val = query_params.get("class")
@@ -103,21 +104,27 @@ if "year" in query_params:
                 try:
                     drive = login_with_service_account()
                     if drive:
-                        # フォルダ階層の作成
                         y_id = get_or_create_folder(drive, y_val, PARENT_FOLDER_ID)
-                        c_id = get_or_create_folder(drive, c_val, y_id)
-                        l_id = get_or_create_folder(drive, l_val, c_id)
+                        c_id = get_or_create_folder(drive, class_val, y_id)
+                        l_id = get_or_create_folder(drive, lesson_val, c_id)
                         
                         filename = f"{group_num}_{members}.wav"
+                        
+                        # 一時ファイルを使用して確実に保存
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+                            tmp.write(audio['bytes'])
+                            tmp_path = tmp.name
+                        
                         new_file = drive.CreateFile({
                             'title': filename,
                             'parents': [{'id': l_id}]
                         })
-                        new_file.SetContentRaw(audio['bytes'])
+                        new_file.SetContentFile(tmp_path)
                         new_file.Upload()
+                        
+                        os.remove(tmp_path)
                         st.success(f"✅ 保存完了！ ({filename})")
                 except Exception as e:
                     st.error(f"エラーが発生しました: {e}")
 else:
-    # パラメータがない場合（管理画面として開いた時）
-    st.info("左側のサイドバーで「年度・クラス・授業名」を設定し、「QRコードを生成」または「プレビュー」を押してください。")
+    st.info("左側のサイドバーで設定を行い、QRコードを発行してください。")
