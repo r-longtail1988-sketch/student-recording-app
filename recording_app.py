@@ -8,9 +8,10 @@ import tempfile
 import os
 import datetime
 
-# --- 1. Googleドライブ連携（先生個人の権限で実行） ---
+# --- 1. Googleドライブ連携（edulaboアカウントの権限で実行） ---
 def login_with_user_account():
     try:
+        # ここでStreamlitのSecretsに保存した「新しい」認証情報を読み込みます
         creds = st.secrets["google_oauth"]
     except KeyError:
         st.error("Secretsに 'google_oauth' が設定されていません。")
@@ -30,19 +31,15 @@ def login_with_user_account():
     )
     return GoogleDrive(gauth)
 
-# --- 2. フォルダ作成・検索用関数（New Folder対策版） ---
+# --- 2. フォルダ作成・検索用関数 ---
 def get_or_create_folder(drive, folder_name, parent_id):
-    # 名前の前後から空白を削除し、文字列として確定させる
     target_name = str(folder_name).strip()
-    
-    # 既存フォルダの検索
     query = f"'{parent_id}' in parents and title = '{target_name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
     file_list = drive.ListFile({'q': query}).GetList()
     
     if file_list:
         return file_list[0]['id']
     else:
-        # 見つからない場合のみ新規作成（titleを明示的に指定）
         folder_metadata = {
             'title': target_name,
             'parents': [{'id': parent_id}],
@@ -50,8 +47,6 @@ def get_or_create_folder(drive, folder_name, parent_id):
         }
         folder = drive.CreateFile(folder_metadata)
         folder.Upload()
-        # 作成直後はドライブのインデックス反映に時間がかかることがあるため、
-        # 確実に作成されたIDを返す
         return folder['id']
 
 # --- 3. URLパラメータ取得の安全化 ---
@@ -63,11 +58,15 @@ def get_safe_param(params, key, default):
 
 # --- 4. メインアプリの構成 ---
 
-# 先生の固定設定
-PARENT_FOLDER_ID = "1Qsnz2k7GwqdTbF7AoBW_Lu8ZnydBqfun"
+# 【★重要：書き換え箇所1】
+# 新しい「edulabo」アカウントのドライブ内に作成したフォルダのIDに貼り替えてください
+PARENT_FOLDER_ID = "1dbKFTVZNeIQl-BOELTfz9PrbD8D7mJis"
+
+# 【★重要：書き換え箇所2】
+# アプリのURLが以前と変わっている場合は、ここを最新のURLに更新してください
 BASE_URL = "https://student-recording-app-56wrfl8ne7hwksqkdxwe5h.streamlit.app/" 
 
-st.title("録音ツール")
+st.title("edulabo 録音ツール") # タイトルもお好みのものへ
 query_params = st.query_params
 
 # 管理者設定（サイドバー）
@@ -81,7 +80,6 @@ with st.sidebar:
     class_input = st.text_input("クラス", placeholder="例：1年A組")
     lesson_input = st.text_input("授業名", placeholder="例：細胞の観察")
     
-    # パラメータ付きURLの生成
     target_url = f"{BASE_URL}?year={year_input}&class={class_input}&lesson={lesson_input}"
     
     if st.button("QRコードを生成"):
@@ -97,7 +95,6 @@ with st.sidebar:
 # --- 5. 生徒用録音画面 ---
 st.divider()
 
-# URLパラメータ（QRコード経由）を優先、なければサイドバーの値
 y_val = get_safe_param(query_params, "year", year_input)
 c_val = get_safe_param(query_params, "class", class_input)
 l_val = get_safe_param(query_params, "lesson", lesson_input)
@@ -125,14 +122,12 @@ if audio:
             try:
                 drive = login_with_user_account()
                 if drive:
-                    # 階層ごとにフォルダを取得または作成
                     y_id = get_or_create_folder(drive, y_val, PARENT_FOLDER_ID)
                     c_id = get_or_create_folder(drive, c_val, y_id)
                     l_id = get_or_create_folder(drive, l_val, c_id)
                     
                     filename = f"{group_num}_{members}.wav"
                     
-                    # 保存処理
                     with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
                         tmp.write(audio['bytes'])
                         tmp_path = tmp.name
