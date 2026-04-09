@@ -66,7 +66,7 @@ PARENT_FOLDER_ID = "1dbKFTVZNeIQl-BOELTfz9PrbD8D7mJis"
 # アプリのURLが以前と変わっている場合は、ここを最新のURLに更新してください
 BASE_URL = "https://student-recording-app-56wrfl8ne7hwksqkdxwe5h.streamlit.app/" 
 
-st.title("edulabo 録音ツール") # タイトルもお好みのものへ
+st.title("Edulabo 録音ツール") # タイトルもお好みのものへ
 query_params = st.query_params
 
 # 管理者設定（サイドバー）
